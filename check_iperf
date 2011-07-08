@@ -1,0 +1,107 @@
+#!/bin/bash
+#
+# Nagios plugin which runs iperf tests.
+#
+# (C) 2011 Robert Veznaver, released under the BSD licence
+#
+ 
+lockfile="/tmp/iperf-lock"
+ 
+# get arguments
+while getopts ':s:u:w:c:h' OPT; do
+  case $OPT in
+    s)  host=$OPTARG;;
+    u)  unit=$OPTARG;;
+    w)  warn=$OPTARG;;
+    c)  crit=$OPTARG;;
+    h)  hlp="yes";;
+  esac
+done
+ 
+# usage
+HELP="
+    usage: $0 [ -s iperf_server -u unit -w value -c value -h ]
+ 
+    syntax:
+            -s  iperf server
+            -u  unit for reporting (Mbps, Kbps, bps)
+            -w  warning integer value
+            -c  critical integer value
+            -p  print out performance data
+            -h  print this help screen
+"
+if [ "$hlp" = "yes" -o $# -lt 1 ]; then
+  echo "$HELP"
+  exit 0
+fi
+ 
+# check options
+if [ -z $host ]; then
+  echo "-s missing"
+  exit
+elif [ -z $warn ]; then
+  echo "-w missing"
+  exit
+elif [ -z $crit ]; then
+  echo "-c missing"
+  exit
+fi
+ 
+# select unit
+case $unit in
+  Mbps)  unit_num="1000000";;
+  Kbps)  unit_num="1000";;
+  bps)   unit_num="1";;
+  *)     unit="bps" unit_num="1";;
+esac
+ 
+# lock
+while ! ( set -o noclobber; echo "$$" > "$lockfile" ) 2> /dev/null
+do
+# check for stale lock
+  otherpid="$(cat "${lockfile}")"
+  if ! kill -0 $otherpid &>/dev/null; then
+    # lock is stale - remove lock
+    rm -rf "$lockfile"
+  fi
+  # wait for lock
+  sleep 1
+done
+# remove lockfile on unexpected exit
+trap 'rm -f "$lockfile"; exit $?' INT TERM EXIT
+ 
+# configure iperf
+iperf_cmd="iperf -c $host -r -y c"
+cut_field="cut -d, -f9"
+ 
+read up down <<< $($iperf_cmd | $cut_field)
+ 
+# release lock
+rm -f $lockfile
+trap - INT TERM EXIT
+ 
+if [ -z $up ]; then
+  up=0
+fi
+ 
+if [ -z $down ]; then
+  down=0
+fi
+ 
+let up_scaled="$up/$unit_num"
+let down_scaled="$down/$unit_num"
+ 
+output="UNKNOWN"
+ 
+if [ $up_scaled -lt $crit -o $down_scaled -lt $crit ]; then
+  output="CRITICAL"
+elif [ $up_scaled -lt $warn -o $down_scaled -lt $warn ]; then
+  output="WARNING"
+else
+  output="OK"
+fi
+ 
+# append stats
+output="$output - UP: $up_scaled $unit / DOWN: $down_scaled $unit"
+ 
+echo $output
